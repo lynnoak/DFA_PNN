@@ -104,7 +104,7 @@ def train_one_seed(model_factory, seed, learning_rate, trainset, testloader, dis
                 name: torch.zeros_like(parameter)
                 for name, parameter in model.named_parameters()
             }
-    gradient_rule = make_gradient_rule(config, max_read_fc1)
+    gradient_rule = make_gradient_rule(config)
     criterion = nn.CrossEntropyLoss()
     trainloader = make_trainloader(trainset, seed, config)
     best_accuracy, best_epoch, best_loss, best_state = -1.0, None, None, None
@@ -121,12 +121,11 @@ def train_one_seed(model_factory, seed, learning_rate, trainset, testloader, dis
                 model.zero_grad(set_to_none=True)
             outputs = model(images)
             loss = criterion(outputs, labels)
-            extra_conv1 = extra_conv2 = None
+            extra_conv1 = None
             if config.use_daq_overshoot_loss:
                 extra_conv1 = daq_overshoot_loss(model._last_sum9_conv1, 200)
-                extra_conv2 = daq_overshoot_loss(model._last_sum9_conv2, 200)
-                loss = loss + extra_conv1 + extra_conv2
-            gradient_rule.backward(model, loss, outputs, labels, extra_conv1, extra_conv2)
+                loss = loss + extra_conv1
+            gradient_rule.backward(model, loss, outputs, labels, extra_conv1)
             weights_before = {
                 name: parameter.detach().clone()
                 for name, parameter in model.named_parameters()

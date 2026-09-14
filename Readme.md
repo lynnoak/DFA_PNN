@@ -59,11 +59,8 @@ Current network structure:
 Input 1 x 3 x 3
   -> conv1: 1 -> 1, kernel = 2 x 2, output 1 x 2 x 2
   -> AnalogReLU
-  -> conv2: 1 -> 2, kernel = 2 x 2, output 2 x 1 x 1
-  -> flatten, producing 2 features
-  -> fc1: 2 -> 4
-  -> ReLU + max-read normalization / saturation
-  -> fc2: 4 -> 2
+  -> flatten, producing 4 features
+  -> fc1: 4 -> 2
   -> two-class output logits
 ```
 
@@ -103,7 +100,7 @@ $$
 y = \mathrm{clip}\left(\max(0, z - v_{th}) \times gain,\ 0,\ 1\right)
 $$
 
-The convolutional layers also apply a DAQ upper limit to the accumulated readout, currently 200. The fully connected hidden layer is normalized by `max_read_fc1` and clipped to `[0,1]`. This corresponds to the ADC / DAQ dynamic range and analog activation saturation in hardware, rather than post-processing after training.
+The convolutional layer applies a DAQ upper limit to the accumulated readout, currently 200. The analog ReLU output is then flattened and sent directly to the single output fully connected layer. This corresponds to the ADC / DAQ dynamic range and analog activation saturation in hardware, rather than post-processing after training.
 
 ---
 
@@ -132,7 +129,7 @@ $$
 f'_{l}\left(\mathbf{a}^{(l)}\right)
 $$
 
-Here `B_fc1`, `B_conv2`, and `B_conv1` are generated when `Net` is initialized according to a random seed. They can be chosen as:
+Here `B_conv1` is generated when `Net` is initialized according to a random seed. It directly maps the two output errors to the four post-ReLU convolution positions. It can be chosen as:
 
 - `orthogonal`: generates row-orthogonal feedback matrices;
 - `random`: generates scaled random matrices.
@@ -213,7 +210,7 @@ If the second-row directory is missing, the current code reuses the correspondin
 - `nearest`: selects the available code value with the smallest absolute distance. It is deterministic and simple to implement.
 - `stochastic`: finds the two adjacent code values around the continuous value and selects one randomly according to distance-based probabilities. It is closer to the continuous value on long-term average but requires a random number source.
 
-Convolution weights are bound to logical positions according to each spatial tap of the kernel. Fully connected weights are bound to logical positions according to input columns. `quantize_parameter_values` processes `conv1.weight`, `conv2.weight`, `fc1.weight`, and `fc2.weight` uniformly, while other parameters remain unchanged.
+Convolution weights are bound to logical positions according to each spatial tap of the kernel. Fully connected weights are bound to logical positions according to input columns. `quantize_parameter_values` processes `conv1.weight` and `fc1.weight`, while other parameters remain unchanged.
 
 ### 5.3 Quantization Update Strategies
 

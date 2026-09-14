@@ -40,12 +40,8 @@ def set_random_seed(seed):
 def save_weights(model, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     np.savetxt(os.path.join(output_dir, "conv1_weights.csv"), model.conv1.weight.detach().cpu().numpy().reshape(1, -1), delimiter=",")
-    np.savetxt(os.path.join(output_dir, "conv2_weights.csv"), model.conv2.weight.detach().cpu().numpy().reshape(2, -1), delimiter=",")
     np.savetxt(os.path.join(output_dir, "fc1_weights_line.csv"), model.fc1.weight.detach().cpu().numpy(), delimiter=",")
-    np.savetxt(os.path.join(output_dir, "fc2_weights_line.csv"), model.fc2.weight.detach().cpu().numpy(), delimiter=",")
     np.savetxt(os.path.join(output_dir, "B_conv1_DFA.csv"), model.B_conv1.detach().cpu().numpy(), delimiter=",")
-    np.savetxt(os.path.join(output_dir, "B_conv2_DFA.csv"), model.B_conv2.detach().cpu().numpy(), delimiter=",")
-    np.savetxt(os.path.join(output_dir, "B_fc1_DFA.csv"), model.B_fc1.detach().cpu().numpy(), delimiter=",")
 
 
 def main():
@@ -77,7 +73,6 @@ def main():
     print(f"  seeds: {config.seed_start}..{config.seed_end}")
     set_random_seed(0)
     max_read = compute_max_read_from_individual_devices(config.weights_dir)
-    max_read_conv2 = max_read * config.max_read_conv2_scale
     discrete_sets = load_discrete_weight_sets_from_folders(config.weights_dir)
     trainset = LineDataset(config.train_samples)
     testset = LineDataset(config.test_samples)
@@ -85,8 +80,6 @@ def main():
 
     def model_factory(seed):
         return Net(
-            max_read,
-            max_read_conv2,
             max_read,
             config.conv_output_divisor,
             random_seed=seed,

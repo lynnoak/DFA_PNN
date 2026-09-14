@@ -94,9 +94,7 @@ def quantize_model_weights(net, discrete_sets, stochastic=False):
 def quantize_parameter_values(parameter_values, discrete_sets, stochastic=False):
     positions_by_name = {
         "conv1.weight": device_positions_for_count(4),
-        "conv2.weight": device_positions_for_count(4),
-        "fc1.weight": device_positions_for_count(2),
-        "fc2.weight": device_positions_for_count(4),
+        "fc1.weight": device_positions_for_count(4),
     }
     quantized = {}
     for name, values in parameter_values.items():
@@ -115,9 +113,7 @@ def quantize_parameter_values(parameter_values, discrete_sets, stochastic=False)
 def quantization_residual_metrics(continuous_values, quantized_values, discrete_sets):
     positions_by_name = {
         "conv1.weight": device_positions_for_count(4),
-        "conv2.weight": device_positions_for_count(4),
-        "fc1.weight": device_positions_for_count(2),
-        "fc2.weight": device_positions_for_count(4),
+        "fc1.weight": device_positions_for_count(4),
     }
     residuals = []
     thresholds = []

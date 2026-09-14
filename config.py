@@ -11,8 +11,6 @@ B_QUAD = torch.tensor([[0.335825, 0.157285], [0.335825, 0.157285]], dtype=torch.
 C_QUAD = torch.tensor([[-0.495205, -0.793455], [-0.495205, -0.793455]], dtype=torch.float32)
 A1_CONV1 = torch.full((2, 2), 0.4, dtype=torch.float32)
 B1_CONV1 = torch.tensor([[3.0, 1.9], [3.0, 1.9]], dtype=torch.float32)
-A1_CONV2 = torch.full((2, 2), 0.4, dtype=torch.float32)
-B1_CONV2 = torch.tensor([[3.0, 1.9], [3.0, 1.9]], dtype=torch.float32)
 
 
 @dataclass(frozen=True)
@@ -32,7 +30,6 @@ class ExperimentConfig:
     feedback_scale: float = 1.0
     output_error_mode: str = "softmax"
     conv_output_divisor: float = 4.0
-    max_read_conv2_scale: float = 1.0
     use_daq_overshoot_loss: bool = False
     shuffle_train_data: bool = False
     quantize_weights: bool = True
@@ -55,7 +52,6 @@ class ExperimentConfig:
                 weight_decay=1e-3,
                 output_error_mode="softmax",
                 conv_output_divisor=2.0,
-                max_read_conv2_scale=6.0,
                 use_daq_overshoot_loss=True,
                 shuffle_train_data=True,
                 quantize_after_update=False,
