@@ -64,7 +64,12 @@ Input 1 x 3 x 3
   -> two-class output logits
 ```
 
-The data module currently uses artificially generated 3 x 3 images: even samples are center vertical lines, and odd samples are center horizontal lines. This dataset is mainly used to verify the hardware-aware training pipeline rather than a general image recognition task.
+The data module supports two dataset modes, selected by `config.dataset_mode` and `DATASET_MODE` in `run_experiment.py`:
+
+- `clean`: training contains the six clean prototypes (three vertical-line patterns and three horizontal-line patterns); testing contains one randomly selected clean pattern from each class.
+- `generalization`: training contains the six clean prototypes plus two one-pixel corruptions for each prototype, for 18 training samples total. Testing contains three one-pixel corruptions per class, for 6 test samples total. Test corruptions are generated from the same prototype family but are explicitly excluded from the training corruption set.
+
+The corruption split uses a fixed dataset seed for reproducible evaluation. A corruption flips exactly one pixel of a clean prototype from 0 to 1 or from 1 to 0. This dataset is mainly used to verify hardware-aware training and generalization rather than a general image recognition task.
 
 Note: in subsequent experiments, this neural network architecture configuration was not suitable for the corresponding test dataset. It is planned to be modified in the future based on the characteristics of the dataset.
 

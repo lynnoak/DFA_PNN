@@ -28,6 +28,7 @@ LEARNING_RATES = (0.2, 0.5, 1.0)
 SEED_START = 0
 SEED_END = 19
 EPOCH_LIMIT = 100
+DATASET_MODE = "generalization"  # Change to "clean" for the six clean prototypes.
 
 
 def set_random_seed(seed):
@@ -59,6 +60,7 @@ def main():
             "seed_start": SEED_START,
             "seed_end": SEED_END,
             "epoch_limit": EPOCH_LIMIT,
+            "dataset_mode": DATASET_MODE,
         }
     )
     print("Training configuration:")
@@ -70,12 +72,25 @@ def main():
     print(f"  learning_rates: {config.learning_rates}")
     print(f"  target_error: {config.output_error_mode} - one_hot")
     print(f"  feedback_matrix: {config.feedback_mode}")
+    print(f"  dataset_mode: {config.dataset_mode}")
     print(f"  seeds: {config.seed_start}..{config.seed_end}")
     set_random_seed(0)
     max_read = compute_max_read_from_individual_devices(config.weights_dir)
     discrete_sets = load_discrete_weight_sets_from_folders(config.weights_dir)
-    trainset = LineDataset(config.train_samples)
-    testset = LineDataset(config.test_samples)
+    trainset = LineDataset(
+        split="train",
+        dataset_mode=config.dataset_mode,
+        seed=config.dataset_seed,
+        train_corruptions_per_prototype=config.train_corruptions_per_prototype,
+        test_corruptions_per_class=config.test_corruptions_per_class,
+    )
+    testset = LineDataset(
+        split="test",
+        dataset_mode=config.dataset_mode,
+        seed=config.dataset_seed,
+        train_corruptions_per_prototype=config.train_corruptions_per_prototype,
+        test_corruptions_per_class=config.test_corruptions_per_class,
+    )
     testloader = torch.utils.data.DataLoader(testset, batch_size=len(testset), shuffle=False)
 
     def model_factory(seed):

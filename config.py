@@ -38,8 +38,12 @@ class ExperimentConfig:
     quantization_mode: str = "nearest"
     record_update_history: bool = True
     update_history_dir: str = "DFA_update_history_general_error"
-    train_samples: int = 2
-    test_samples: int = 20
+    dataset_mode: str = "generalization"
+    dataset_seed: int = 0
+    train_samples: int = 6
+    test_samples: int = 2
+    train_corruptions_per_prototype: int = 2
+    test_corruptions_per_class: int = 3
     weights_dir: str = "weights_line1_DFA"
 
     def with_preset(self, preset):
