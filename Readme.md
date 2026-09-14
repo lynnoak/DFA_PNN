@@ -1,206 +1,268 @@
-# 模块化训练代码与硬件映射说明
+Report document (read-only on Overleaf):
+https://www.overleaf.com/read/mtmjjzzdzwhr#e90288
 
-本文说明当前目录中已经拆分的训练代码：每个模块负责什么、它位于整个训练模型的哪一部分，以及这些拆分对硬件实现的含义。当前入口是 `run_experiment.py`，默认配置是 DFA、每次更新后量化、带动量 SGD；运行入口中的常量可以切换梯度规则、优化器和量化策略。
+# Modular Hardware-Aware DFA Training Framework
 
-## 1. 整体训练链路
+This project reorganizes the existing PNN training code into a modular pipeline so that the hardware-aware forward model, learning rule, parameter update, and hardware-weight mapping can be developed and evaluated independently. The current entry point is `run_experiment.py`. The default configuration is DFA, quantization after every update, and SGD with momentum. Constants in the experiment entry point can be used to switch the gradient rule, optimizer, and quantization strategy.
 
-一次训练更新可以概括为：
+A single training update can be summarized as:
 
 ```text
-输入图像
-  -> 硬件感知前传（卷积/全连接/模拟激活）
-  -> 输出误差
-  -> DFA 直接反馈误差，或保留的 BP 反向传播
-  -> 梯度
-  -> 优化器更新连续权重
-  -> 连续权重映射为实际可编程离散权重
-  -> 下一批数据使用量化后的硬件权重
+Input image
+  -> hardware-aware forward pass (convolution / fully connected / analog activation)
+  -> output error
+  -> DFA direct error feedback, or retained BP backpropagation
+  -> local gradients
+  -> optimizer updates continuous weights
+  -> continuous weights are mapped to programmable discrete device states
+  -> next batch uses the quantized hardware weights
 ```
 
-代码层的对应关系如下：
-
-| 模块 | 主要职责 | 在训练模型中的位置 |
-| --- | --- | --- |
-| `data.py` | 生成垂直线/水平线二分类数据 | 输入与标签 |
-| `config.py` | 训练超参数、硬件标定系数、设备选择 | 全局配置与硬件参数 |
-| `hardware_model.py` | 硬件感知卷积、全连接、模拟 ReLU、DFA 反馈矩阵 | 前传模型 |
-| `learning_rules.py` | BP 和 DFA 的误差/梯度计算 | 后传误差与梯度 |
-| `trainer.py` | batch、loss、优化器、更新、评估、更新历史 | 训练控制器 |
-| `quantization.py` | 读取器件码值、连续值量化、量化残差诊断 | 权重到硬件状态 |
-| `run_experiment.py` | 组合配置，扫描策略/学习率/随机种子，保存结果 | 实验入口 |
-
-## 2. 前传：把神经网络写成硬件读出模型
-
-### 2.1 网络结构
-
-`hardware_model.py` 中的 `Net` 不是普通的理想浮点网络，而是用标定方程近似实际器件读出：
+The corresponding modular training cycle is:
 
 ```text
-输入 1 x 3 x 3
-  -> conv1: 1 -> 1, kernel=2 x 2，输出 1 x 2 x 2
+Input and label
+  -> hardware_model.py: hardware-aware forward pass
+  -> learning_rules.py: output error and DFA / BP
+  -> trainer.py: optimizer updates continuous weights
+  -> quantization.py: projection to device states
+  -> next forward pass uses quantized hardware weights
+```
+
+The modularization separates the training cycle into four principal functional blocks: the physical forward path, the DFA learning rule, the parameter-update mechanism, and the device-weight mapping. Two additional modules provide data generation and experiment-level control. This separation is important because these blocks correspond to different requirements in a future hardware implementation.
+
+---
+
+## 1. Code Structure
+
+| Module | Main Responsibility | Position in the Training Model |
+| --- | --- | --- |
+| `data.py` | Generates vertical-line / horizontal-line binary classification data | Input and labels |
+| `config.py` | Training hyperparameters, hardware calibration coefficients, device selection | Global configuration and hardware parameters |
+| `hardware_model.py` | Hardware-aware convolution, fully connected layers, analog ReLU, DFA feedback matrices | Forward model |
+| `learning_rules.py` | BP and DFA error / gradient computation | Backward error and gradients |
+| `trainer.py` | Batch handling, loss, optimizer, update, evaluation, update history | Training controller |
+| `quantization.py` | Reads device code values, continuous-value quantization, quantization residual diagnostics | Weight-to-hardware-state mapping |
+| `run_experiment.py` | Combines configurations, scans strategies / learning rates / random seeds, saves results | Experiment entry point |
+
+This modular design allows the physical forward model, learning rule, parameter update, and device-weight mapping to be replaced or evaluated independently.
+
+---
+
+## 2. Hardware-Aware Forward Path
+
+The forward path is implemented in `hardware_model.py`. It is not an ideal floating-point network; instead, it uses calibrated device-response equations to approximate actual device readout.
+
+Current network structure:
+
+```text
+Input 1 x 3 x 3
+  -> conv1: 1 -> 1, kernel = 2 x 2, output 1 x 2 x 2
   -> AnalogReLU
-  -> conv2: 1 -> 2, kernel=2 x 2，输出 2 x 1 x 1
-  -> flatten，得到 2 个特征
+  -> conv2: 1 -> 2, kernel = 2 x 2, output 2 x 1 x 1
+  -> flatten, producing 2 features
   -> fc1: 2 -> 4
-  -> ReLU + max-read 归一化/饱和
+  -> ReLU + max-read normalization / saturation
   -> fc2: 4 -> 2
-  -> 两类输出 logits
+  -> two-class output logits
 ```
 
-数据模块目前使用人工生成的 3 x 3 图像：偶数样本是中间竖线，奇数样本是中间横线。因此它主要用于验证硬件感知训练链路，而不是通用图像识别数据集。
+The data module currently uses artificially generated 3 x 3 images: even samples are center vertical lines, and odd samples are center horizontal lines. This dataset is mainly used to verify the hardware-aware training pipeline rather than a general image recognition task.
 
-### 2.2 卷积与全连接的器件读出
+Note: in subsequent experiments, this neural network architecture configuration was not suitable for the corresponding test dataset. It is planned to be modified in the future based on the characteristics of the dataset.
 
-对卷积中的每个输入 patch，代码先做逐位置线性调制：
+### 2.1 Device Readout Model
 
-$$m_{ij}=A1_{ij}x_{ij}+B1_{ij}$$
+For each input patch in a convolution, the code first applies a per-position linear modulation:
 
-再使用二次标定曲线得到器件输出：
+$$
+m_{ij} = A1_{ij}x_{ij} + B1_{ij}
+$$
 
-$$r_{ij}=A_{ij}^{quad}m_{ij}^{2}+B_{ij}^{quad}m_{ij}+C_{ij}^{quad}$$
+Then it uses a quadratic calibration curve to obtain the device output:
 
-最后乘以该位置对应的权重并累加：
+$$
+r_{ij} = A_{ij}^{quad}m_{ij}^{2} + B_{ij}^{quad}m_{ij} + C_{ij}^{quad}
+$$
 
-$$s=\sum_{ij}r_{ij}w_{ij}$$
+Finally, it multiplies by the corresponding weight and accumulates:
 
-代码中的 `custom_convolution` 使用 `F.unfold` 将滑动窗口展开，然后完成上述逐 tap 变换、加权和与 `conv_output_divisor` 缩放。全连接层的 `custom_fc` 使用相同的标定思想，把每个输入列绑定到一个逻辑器件位置，再进行矩阵乘法。
+$$
+s = \sum_{ij} r_{ij}w_{ij}
+$$
 
-这里的 `A1_*`、`B1_*`、`A_quad`、`B_quad`、`C_quad` 来自 `config.py`，并且前传和 `compute_max_read_from_individual_devices` 使用同一组系数。这样训练时看到的不是理想乘法，而是校准后的模拟读出。
+`custom_convolution` uses `F.unfold` to expand sliding windows, then performs the per-tap transformation, weighted sum, and `conv_output_divisor` scaling. `custom_fc` uses the same calibration idea: each input column is bound to a logical device position, and then matrix multiplication is performed.
 
-### 2.3 模拟激活和读出限制
+The calibration coefficients `A1_*`, `B1_*`, `A_quad`, `B_quad`, and `C_quad` come from `config.py`. The forward pass and `compute_max_read_from_individual_devices` use the same set of coefficients.
 
-`AnalogReLU` 完成阈值、增益和上限裁剪：
+### 2.2 Analog Activation and Readout Limits
 
-$$y=clip(max(0,z-v_{th})\times gain,0,1)$$
+`AnalogReLU` performs thresholding, gain, and upper-limit clipping:
 
-卷积层还对累加读数施加 DAQ 上限（当前是 200），全连接隐藏层按 `max_read_fc1` 归一化并裁剪到 `[0,1]`。这对应硬件中的 ADC/DAQ 动态范围和模拟激活电路的饱和，而不是训练结束后才做的后处理。
+$$
+y = \mathrm{clip}\left(\max(0, z - v_{th}) \times gain,\ 0,\ 1\right)
+$$
 
-### 2.4 对硬件的要求
+The convolutional layers also apply a DAQ upper limit to the accumulated readout, currently 200. The fully connected hidden layer is normalized by `max_read_fc1` and clipped to `[0,1]`. This corresponds to the ADC / DAQ dynamic range and analog activation saturation in hardware, rather than post-processing after training.
 
-前传落地至少需要：
+---
 
-1. 每个卷积 tap/全连接输入列能够选择对应的实际器件或器件位置，并支持器件读出值与输入信号的调制。
-2. 能够实现或查表实现二次标定曲线，并在累加路径上支持足够的动态范围。
-3. 具备模拟乘加、行列累加或等价的时分复用结构；当前软件模型用张量运算模拟这一过程。
-4. 具备 DAQ 饱和检测/限制，以及激活归一化所需的 `MAX_READ` 标定值。
-5. 若采用 DFA，还需要片上或片外固定反馈矩阵的乘法/累加通路。
+## 3. DFA Error Feedback and BP Baseline
 
-## 3. 后传误差：DFA 为主，保留 BP 选择
+The learning rule is isolated in `learning_rules.py`. Its input is the difference between the forward propagation output and the target labels. Its output consists of local gradients at each location.
 
-### 3.1 输出误差
+### 3.1 Output Error
 
-`DFARule.backward` 先把标签转成 one-hot，然后支持两种输出误差：
+`DFARule.backward` first converts labels to one-hot vectors, then supports two output-error forms:
 
-- `logits`：`(outputs - targets) / batch_size`。这是当前 `sgd_general_error` 配置的默认方式。
-- `softmax`：`(softmax(outputs) - targets) / batch_size`。用于兼容旧实验设置。
+- `logits`: `(outputs - targets) / batch_size`. This is the current default for `sgd_general_error`.
+- `softmax`: `(softmax(outputs) - targets) / batch_size`. This is retained for compatibility with older experiment settings.
 
-因此，当前实现并不要求在硬件上执行完整的 softmax；`logits` 模式只需要输出差值、标签编码和批量归一化。
+Therefore, the current implementation does not require a full softmax in hardware. The `logits` mode only requires output differences, label encoding, and batch normalization.
 
-### 3.2 DFA 反馈
+### 3.2 DFA Feedback
 
-DFA 不把后一层的权重转置误差逐层传回，而是将输出误差直接乘以每层固定的反馈矩阵：
+DFA does not propagate the error layer by layer through transposed weights of the next layer. Instead, it multiplies the output error directly by a fixed feedback matrix for each layer:
 
-$$\delta_l=\epsilon B_l\odot g'_l$$
+$$
+\boldsymbol{\delta}^{(l)}
+=
+\left(\mathbf{e}\mathbf{B}^{(l)}\right)
+\odot
+f'_{l}\left(\mathbf{a}^{(l)}\right)
+$$
 
-其中 `B_fc1`、`B_conv2`、`B_conv1` 在 `Net` 初始化时按随机种子生成，可以选择：
+Here `B_fc1`, `B_conv2`, and `B_conv1` are generated when `Net` is initialized according to a random seed. They can be chosen as:
 
-- `orthogonal`：生成行正交反馈矩阵；
-- `random`：生成缩放随机矩阵。
+- `orthogonal`: generates row-orthogonal feedback matrices;
+- `random`: generates scaled random matrices.
 
-代码随后把局部误差与对应前激活相乘，借助 `torch.autograd.grad` 只计算该层局部权重梯度。模拟 ReLU 使用 `_analog_relu_grad`，会考虑阈值和上限饱和区间。
+These matrices remain fixed during training. The current implementation still uses `torch.autograd.grad` to convert these explicitly constructed local DFA signals into weight gradients. Consequently, this module currently represents the algorithmic target for a future DFA feedback / update circuit rather than a fully hardware-native implementation.
 
-这套实现的含义是：前向权重负责信号传播，固定反馈矩阵负责误差广播，二者不共享参数，也不需要存储或计算完整 BP 的逐层反向权重乘法。
+### 3.3 Retained BP Option
 
-### 3.3 保留 BP 选择
+`BackpropRule` is also retained. When `config.gradient_mode == "bp"`, the code directly executes `loss.backward()`. When it is set to `"dfa"`, `DFARule` is used. Therefore, the same forward model and the same optimization / quantization pipeline can directly compare BP and DFA. BP can also serve as a software baseline or debugging mode when DFA hardware is not available.
 
-`learning_rules.py` 中的 `BackpropRule` 仍然保留。当 `config.gradient_mode == "bp"` 时直接执行 `loss.backward()`；当设置为 `"dfa"` 时使用 `DFARule`。因此同一个前传和同一个优化/量化流水线，可以直接比较 BP 与 DFA，硬件化时也可以把 BP 作为软件基线或调试模式。
+---
 
-### 3.4 对硬件的要求
+## 4. Optimizer: From Gradients to Continuous Candidate Weights
 
-DFA 硬件需要：
+The optimizer logic is located in `trainer.py`. DFA / BP only produces gradients; the optimizer is responsible for converting the error into parameter changes.
 
-- 输出误差生成电路或控制器；
-- 固定的 `B_*` 矩阵存储，或者把矩阵系数固化在互连/模拟阵列中；
-- 对每层激活做逐元素门控，并将误差广播到局部权重更新单元；
-- 处理反馈矩阵的乘加和误差缩放。
+The general update form is:
 
-BP 选择则需要可编程的反向权重通路、梯度缓存和逐层反向时序，硬件代价通常更高。当前代码保留 BP，主要价值是算法对照、验证梯度和在没有 DFA 硬件时提供软件基线。
+$$
+W^{*}_{t+1}
+=
+\mathcal{U}
+\left(
+W_t,\,
+g_t;\,
+\eta,\,
+S_t
+\right)
+$$
 
-## 4. 误差到权重：四种优化器方法
+where `\mathcal{U}` is the selected optimization rule, `S_t` is its internal state, and `W^{*}_{t+1}` is the resulting continuous candidate weight.
 
-后传只产生梯度，真正把误差转换成参数变化的是 `trainer.py` 的优化器选择。`_make_optimizer` 当前支持四种方法：
+Four optimization methods are currently supported:
 
-| 方法 | 更新特点 | 硬件含义 |
+| Method | Update Characteristic | Hardware Implication |
 | --- | --- | --- |
-| `sgd` | 直接使用当前梯度更新，公式近似为 `w <- w - lr * g` | 只需梯度、学习率和累加器，最容易做成局部更新 |
-| `sgd_momentum` | 保存动量 `v`，用历史梯度平滑更新 | 每个权重需要额外的动量存储和乘加；当前入口默认 `momentum=0.9` |
-| `adam` | 保存一阶矩和二阶矩，并做偏置修正 | 每个权重需要两组状态存储、平方/开方或近似电路，资源和控制复杂度更高 |
-| `adamw` | Adam 的自适应更新与解耦 weight decay | 除 Adam 状态外，还需实现独立的权重衰减路径；旧版实验通过 `legacy_adamw` 预设使用 |
+| `sgd` | Directly applies the current gradient, approximately `w <- w - lr * g` | Requires only gradients, learning rate, and an accumulator; easiest to implement as a local update |
+| `sgd_momentum` | Stores momentum `v` and smooths updates using historical gradients | Requires additional momentum storage and multiply-accumulate per weight; current default `momentum=0.9` |
+| `adam` | Stores first- and second-moment estimates and applies bias correction | Requires two state values per weight, square / square-root or approximation circuits, and higher control complexity |
+| `adamw` | Adam adaptive update with decoupled weight decay | Requires Adam state plus an independent weight-decay path |
 
-当前代码通过 PyTorch 优化器执行这一步，因此优化器状态主要在软件控制器/训练主机中。若迁移到硬件，SGD 最适合先实现；动量、Adam 和 AdamW 需要把状态放在片上存储、近存储控制器或外部数字控制器中。无论优化器是哪一种，下一步仍可能把连续候选值送入离散量化。
+The current code uses PyTorch optimizers, so optimizer states mainly reside in the software controller / training host. For hardware migration, SGD is the most suitable first implementation. Momentum, Adam, and AdamW require state to be placed in on-chip memory, near-memory controllers, or an external digital controller.
 
-## 5. 权重到实际离散值：量化方法
+In general, DFA determines the spatial credit-assignment mechanism, that is, how the output error is transformed into a local gradient for each layer. The optimizer determines how these gradients are integrated over training iterations. This separation is important because DFA updates can be noisy, and useful directional information may only become apparent through repeated updates.
 
-### 5.1 离散器件码值
+---
 
-`quantization.py` 从 `weights_ij/*.csv` 读取每个逻辑位置 `(i,j)` 的可用器件权重码值。四个逻辑位置为：
+## 5. Projection to Discrete Device States
+
+The quantization module is located in `quantization.py`. Its input is the continuous candidate weight produced by the optimizer, and its output is a discrete weight value compatible with the programmable states of the physical device.
+
+Let the optimizer produce a continuous candidate weight `W^{*}_{t+1}`. The hardware-compatible weight is obtained by projecting this candidate onto the set of available device states:
+
+$$
+W^{\mathrm{HW}}_{t+1}
+=
+Q_{\mathcal{W}_{\mathrm{device}}}
+\left(W^{*}_{t+1}\right)
+$$
+
+where `\mathcal{W}_{\mathrm{device}}` denotes the measured set of programmable device weights and `Q` denotes the quantization operator.
+
+### 5.1 Discrete Device Code Values
+
+`quantization.py` reads the available device weight code values for each logical position `(i,j)` from `weights_ij/*.csv`. The four logical positions are:
 
 ```text
 (0,0)  (0,1)
 (1,0)  (1,1)
 ```
 
-如果第二行目录缺失，当前代码会复用对应的第一行目录。`compute_max_read_from_individual_devices` 使用离散值和同一组标定曲线估计最大读数，供模拟激活的增益和读出范围使用。
+If the second-row directory is missing, the current code reuses the corresponding first-row directory. `compute_max_read_from_individual_devices` uses the discrete values and the same set of calibration curves to estimate the maximum readout, which is used for analog activation gain and readout range.
 
-### 5.2 两种数值量化方式
+### 5.2 Numerical Quantization Methods
 
-`quantize_weight_tensor` 支持两种把连续值变成器件码值的方法：
+`quantize_weight_tensor` supports two methods for mapping continuous values to device code values:
 
-- `nearest`：选择绝对距离最小的可用码值，结果确定、实现简单；
-- `stochastic`：找到连续值两侧的相邻码值，按距离计算概率随机选择，长期平均更接近连续值，但需要随机数源。
+- `nearest`: selects the available code value with the smallest absolute distance. It is deterministic and simple to implement.
+- `stochastic`: finds the two adjacent code values around the continuous value and selects one randomly according to distance-based probabilities. It is closer to the continuous value on long-term average but requires a random number source.
 
-卷积权重按 kernel 的每个空间 tap 绑定逻辑位置；全连接权重按输入列绑定逻辑位置。`quantize_parameter_values` 对 `conv1.weight`、`conv2.weight`、`fc1.weight`、`fc2.weight` 统一处理，其余参数保持不变。
+Convolution weights are bound to logical positions according to each spatial tap of the kernel. Fully connected weights are bound to logical positions according to input columns. `quantize_parameter_values` processes `conv1.weight`, `conv2.weight`, `fc1.weight`, and `fc2.weight` uniformly, while other parameters remain unchanged.
 
-### 5.3 每次更新后的三种残差策略
+### 5.3 Quantization Update Strategies
 
-当 `quantize_after_update=True` 时，训练器还支持三种更新策略。它们是量化更新策略，不是上面的四种优化器：
+When `quantize_after_update=True`, the trainer supports three residual-aware update strategies. These are quantization update strategies, not the four optimizers above.
 
-1. `shadow_weight_residual`：优化器更新连续的 shadow weight，再把 shadow weight 量化后写入模型。模型实际使用离散值，连续 shadow weight 保留小更新，适合避免小梯度长期丢失。
-2. `only_residual`：在当前实际权重上叠加上一步残差，再量化；新残差等于候选连续值减去本次量化值。
-3. `only_residual_with_reset`：同样维护残差，但一旦某个位置跨过离散码值并发生实际跳变，就把该位置残差清零，避免跨码后继续携带旧残差。
+| Strategy | Description | Characteristics |
+| --- | --- | --- |
+| `shadow_weight_residual` | The optimizer updates a continuous shadow weight, which is then quantized and written into the model | The model uses discrete values, while the continuous shadow retains small updates and avoids long-term loss of small gradients |
+| `only_residual` | The previous residual is added to the current actual weight before quantization; the new residual is the candidate continuous value minus the quantized value | Preserves unapplied updates and quantization remainder; can be implemented with a digital accumulator in hardware |
+| `only_residual_with_reset` | Maintains the residual in the same way, but resets the residual at a position once the discrete code value is crossed and an actual transition occurs | Simplifies hardware implementation and is naturally compatible with capacitor / charge accumulation and threshold-triggered structures, but discards part of the continuous update information |
 
-训练器还记录优化器连续更新量、实际量化更新量、零更新比例和残差相对下一个码值阈值的比例，可用于判断学习率是否太小、量化是否吞掉了大部分更新。
+The trainer also records the continuous optimizer update, the actual quantized update, the zero-update ratio, and the residual ratio relative to the next code-value threshold. These diagnostics can be used to judge whether the learning rate is too small or whether quantization is discarding most updates.
 
-### 5.4 对硬件的要求
+---
 
-量化实现需要：
+## 6. Current Order of One Update
 
-- 每个逻辑位置的实际可用码值表，或能搜索相邻码值的查找表；
-- 将候选连续权重与码值比较的数字控制逻辑；
-- 写入器件的编程接口，以及读回校验接口；
-- 若使用残差策略，需要保存 shadow weight 或 residual，通常由数字控制器/外部 FPGA 保存；
-- 若使用随机量化，需要可复现或可校准的随机数源。
+The actual order in `trainer.train_one_seed` is:
 
-严格的硬件闭环中，量化后的值应当是“实际写入并读回确认”的值，而不是软件假设的理想码值。当前代码把 CSV 中的测量码值视为可用硬件状态，并在软件中完成映射。
+1. Create the model and, if needed, quantize the initial weights first.
+2. Run the forward pass to obtain hardware-aware outputs, and compute cross-entropy and optional DAQ overshoot penalty.
+3. Select DFA or BP according to `gradient_mode` to obtain gradients for each trainable weight.
+4. Use one of the four optimizers to update continuous parameters or shadow parameters.
+5. Generate discrete candidate values according to the quantization strategy and `nearest` / `stochastic` mode.
+6. Copy the discrete values back to the actual model; update the residual if necessary.
+7. Evaluate using the current actual discrete weights and record the update history.
 
-## 6. 一次更新的当前实现顺序
+The training objective is therefore simultaneously constrained by three factors:
 
-`trainer.train_one_seed` 的实际顺序是：
+- the forward readout curve limits the signal;
+- DFA / BP determines how the error is generated;
+- quantization determines whether the parameters can finally be realized on the device.
 
-1. 创建模型，并按需要先量化初始权重。
-2. 前传得到硬件感知输出，计算交叉熵和可选 DAQ overshoot penalty。
-3. 按 `gradient_mode` 选择 DFA 或 BP，得到各可训练权重的梯度。
-4. 用四种优化器之一更新连续参数或 shadow 参数。
-5. 按量化策略和 `nearest/stochastic` 模式生成离散候选值。
-6. 把离散值复制回实际模型；必要时更新 residual。
-7. 用当前实际离散权重评估，并记录更新历史。
+During hardware validation, these three factors should be checked carefully to ensure that they use the same set of calibration coefficients, readout limits, and discrete code values.
 
-这使得训练目标同时受到三类约束：前传读出曲线限制信号，DFA/BP 决定误差如何产生，量化决定参数最终能否在器件上落地。硬件验证时应重点检查这三者是否使用了同一套标定系数、读数上限和离散码值。
+---
 
-## 7. 当前实现边界与硬件化注意点
+## 7. Running and Results
 
-- 目前训练循环和四种优化器依赖 PyTorch，尚未把梯度累加、优化器状态和量化写入实现为真实硬件时序。
-- `custom_convolution` 已显式保存卷积累加读数，便于 DAQ overshoot loss；真实系统需要对应的 ADC/DAQ 采样点。
-- DFA 反馈矩阵由软件按种子生成并保存到模型 buffer；硬件版本需要固定矩阵的存储、校准和版本管理。
-- 当前全连接 `custom_fc` 使用配置中的标定表和逻辑位置映射；若全连接阵列的器件标定与卷积阵列不同，应在配置层拆出独立的 FC 标定参数。
-- `run_experiment.py` 会扫描量化策略、学习率和随机种子，并把成功模型及更新摘要保存到 `DFA_weights_modular/`；这些结果可作为硬件映射前的算法基线。
+Current entry point:
+
+```bash
+python run_experiment.py
+```
+
+`run_experiment.py` scans quantization strategies, learning rates, and random seeds, and saves successful models and update summaries to:
+
+```text
+DFA_weights_modular/
+```
+
+These results can serve as algorithmic baselines before hardware mapping.
