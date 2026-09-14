@@ -1,0 +1,29 @@
+# Python cache and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Editors and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Repository policy: sync only the current root-level code and documentation.
+# Every directory and every other root-level file is ignored by default.
+/*
+!/*.py
+!/*.md
+!/.gitignore
